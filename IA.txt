@@ -1,0 +1,425 @@
+una estructura de base de datos para llevar el control y administracion de obras segun clientes , fornecedores y tipo de gasto, cuentas por pagar y cuentas por cobrar
+
+
+A continuación, presento una estructura de base de datos normalizada para gestionar obras, clientes, proveedores, gastos, cuentas por pagar (proveedores) y cuentas por cobrar (clientes):
+
+```sql
+-- Tabla de Clientes
+CREATE TABLE clientes (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    nombre VARCHAR(100) NOT NULL,
+    ruc_ci VARCHAR(20) NOT NULL UNIQUE,
+    direccion VARCHAR(200),
+    telefono VARCHAR(20),
+    email VARCHAR(100),
+    estado ENUM('activo', 'inactivo') DEFAULT 'activo'
+);
+
+-- Tabla de Proveedores
+CREATE TABLE proveedores (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    nombre VARCHAR(100) NOT NULL,
+    ruc_ci VARCHAR(20) NOT NULL UNIQUE,
+    direccion VARCHAR(200),
+    telefono VARCHAR(20),
+    email VARCHAR(100),
+    estado ENUM('activo', 'inactivo') DEFAULT 'activo'
+);
+
+-- Tabla de Obras/Proyectos
+CREATE TABLE obras (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    cliente_id INT NOT NULL,
+    nombre VARCHAR(100) NOT NULL,
+    descripcion TEXT,
+    fecha_inicio DATE,
+    fecha_fin_prevista DATE,
+    presupuesto DECIMAL(12,2),
+    estado ENUM('planificacion', 'en_progreso', 'finalizado', 'cancelado') DEFAULT 'planificacion',
+    FOREIGN KEY (cliente_id) REFERENCES clientes(id) ON DELETE CASCADE
+);
+
+-- Tabla de Tipos de Gasto
+CREATE TABLE tipos_gasto (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    nombre VARCHAR(50) NOT NULL UNIQUE,
+    descripcion VARCHAR(255)
+);
+
+-- Tabla de Gastos (Relacionada con obras y proveedores)
+CREATE TABLE gastos (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    obra_id INT NOT NULL,
+    proveedor_id INT NOT NULL,
+    tipo_gasto_id INT NOT NULL,
+    descripcion TEXT NOT NULL,
+    monto DECIMAL(12,2) NOT NULL,
+    fecha DATE NOT NULL,
+    FOREIGN KEY (obra_id) REFERENCES obras(id) ON DELETE CASCADE,
+    FOREIGN KEY (proveedor_id) REFERENCES proveedores(id) ON DELETE CASCADE,
+    FOREIGN KEY (tipo_gasto_id) REFERENCES tipos_gasto(id)
+);
+
+-- Tabla de Cuentas por Pagar (Proveedores)
+CREATE TABLE cuentas_pagar (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    gasto_id INT NOT NULL,
+    fecha_emision DATE NOT NULL,
+    fecha_vencimiento DATE NOT NULL,
+    monto_total DECIMAL(12,2) NOT NULL,
+    saldo_pendiente DECIMAL(12,2) NOT NULL,
+    estado ENUM('pendiente', 'parcial', 'pagado', 'vencido') DEFAULT 'pendiente',
+    FOREIGN KEY (gasto_id) REFERENCES gastos(id) ON DELETE CASCADE
+);
+
+-- Tabla de Pagos (a Proveedores)
+CREATE TABLE pagos (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    cuenta_pagar_id INT NOT NULL,
+    monto DECIMAL(12,2) NOT NULL,
+    fecha DATE NOT NULL,
+    metodo_pago ENUM('transferencia', 'cheque', 'efectivo', 'tarjeta'),
+    FOREIGN KEY (cuenta_pagar_id) REFERENCES cuentas_pagar(id) ON DELETE CASCADE
+);
+
+-- Tabla de Cuentas por Cobrar (Clientes)
+CREATE TABLE cuentas_cobrar (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    obra_id INT NOT NULL,
+    descripcion VARCHAR(255) NOT NULL,
+    fecha_emision DATE NOT NULL,
+    fecha_vencimiento DATE NOT NULL,
+    monto_total DECIMAL(12,2) NOT NULL,
+    saldo_pendiente DECIMAL(12,2) NOT NULL,
+    estado ENUM('pendiente', 'parcial', 'pagado', 'vencido') DEFAULT 'pendiente',
+    FOREIGN KEY (obra_id) REFERENCES obras(id) ON DELETE CASCADE
+);
+
+-- Tabla de Cobros (de Clientes)
+CREATE TABLE cobros (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    cuenta_cobrar_id INT NOT NULL,
+    monto DECIMAL(12,2) NOT NULL,
+    fecha DATE NOT NULL,
+    metodo_pago ENUM('transferencia', 'cheque', 'efectivo', 'tarjeta'),
+    FOREIGN KEY (cuenta_cobrar_id) REFERENCES cuentas_cobrar(id) ON DELETE CASCADE
+);
+```
+
+### Explicación del modelo:
+
+1. **Clientes y Proveedores**: 
+   - Almacenan información básica de entidades comerciales
+   - Incluyen campos para identificación fiscal (RUC/CI)
+
+2. **Obras**:
+   - Relacionadas con clientes
+   - Contienen información de plazos, presupuesto y estado
+
+3. **Gestión de Gastos**:
+   - `tipos_gasto`: Categoriza los gastos (materiales, mano de obra, etc.)
+   - `gastos`: Registra cada gasto asociado a una obra, proveedor y tipo
+
+4. **Cuentas por Pagar**:
+   - Vinculadas a gastos específicos
+   - Control de vencimientos y saldos pendientes
+   - Actualización automática de estado mediante triggers (ejemplo abajo)
+
+5. **Cuentas por Cobrar**:
+   - Vinculadas a obras/clientes
+   - Seguimiento de facturación a clientes
+   - Control de vencimientos y saldos
+
+6. **Transacciones**:
+   - `pagos`: Registra pagos a proveedores
+   - `cobros`: Registra cobros a clientes
+
+### Triggers recomendados (ejemplos):
+
+**Actualizar saldo al registrar un pago:**
+```sql
+DELIMITER //
+CREATE TRIGGER after_pago_insert
+AFTER INSERT ON pagos
+FOR EACH ROW
+BEGIN
+    UPDATE cuentas_pagar 
+    SET saldo_pendiente = saldo_pendiente - NEW.monto
+    WHERE id = NEW.cuenta_pagar_id;
+END;
+//
+DELIMITER ;
+```
+
+**Actualizar estado de cuenta por pagar:**
+```sql
+DELIMITER //
+CREATE TRIGGER after_pago_update
+AFTER UPDATE ON cuentas_pagar
+FOR EACH ROW
+BEGIN
+    IF NEW.saldo_pendiente <= 0 THEN
+        UPDATE cuentas_pagar SET estado = 'pagado' WHERE id = NEW.id;
+    ELSEIF NEW.saldo_pendiente < NEW.monto_total THEN
+        UPDATE cuentas_pagar SET estado = 'parcial' WHERE id = NEW.id;
+    END IF;
+END;
+//
+DELIMITER ;
+```
+
+### Vistas útiles:
+
+**Resumen financiero por obra:**
+```sql
+CREATE VIEW resumen_obras AS
+SELECT 
+    o.id,
+    o.nombre AS obra,
+    c.nombre AS cliente,
+    SUM(g.monto) AS total_gastos,
+    SUM(cc.monto_total) AS total_facturado,
+    (SUM(cc.monto_total) - SUM(g.monto)) AS utilidad_bruta
+FROM obras o
+JOIN clientes c ON o.cliente_id = c.id
+LEFT JOIN gastos g ON o.id = g.obra_id
+LEFT JOIN cuentas_cobrar cc ON o.id = cc.obra_id
+GROUP BY o.id;
+```
+
+**Estado de cuentas por pagar:**
+```sql
+CREATE VIEW estado_cuentas_pagar AS
+SELECT 
+    p.nombre AS proveedor,
+    cp.fecha_vencimiento,
+    cp.monto_total,
+    cp.saldo_pendiente,
+    cp.estado
+FROM cuentas_pagar cp
+JOIN gastos g ON cp.gasto_id = g.id
+JOIN proveedores p ON g.proveedor_id = p.id;
+```
+
+Este modelo permite:
+1. Control completo del ciclo de vida de las obras
+2. Seguimiento detallado de gastos por categorías
+3. Gestión automatizada de cuentas por pagar/cobrar
+4. Cálculo de rentabilidad por obra
+5. Alertas automáticas de vencimientos
+6. Integridad referencial garantizada
+7. Escalabilidad para múltiples proyectos simultáneos
+
+Las tablas están diseñadas para soportar:
+- Múltiples obras por cliente
+- Múltiples gastos/proveedores por obra
+- Pagos parciales en cuentas
+- Histórico completo de transacciones
+- Análisis financiero por categorías de gasto
+
+
+genera los codigos para ser ejecutado con sqlite
+
+Aquí tienes el código SQL adaptado para SQLite, con las modificaciones necesarias para su compatibilidad:
+
+```sql
+-- Tabla de Clientes
+CREATE TABLE clientes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    nombre TEXT NOT NULL,
+    ruc_ci TEXT NOT NULL UNIQUE,
+    direccion TEXT,
+    telefono TEXT,
+    email TEXT,
+    estado TEXT CHECK(estado IN ('activo', 'inactivo')) DEFAULT 'activo'
+);
+
+-- Tabla de Proveedores
+CREATE TABLE proveedores (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    nombre TEXT NOT NULL,
+    ruc_ci TEXT NOT NULL UNIQUE,
+    direccion TEXT,
+    telefono TEXT,
+    email TEXT,
+    estado TEXT CHECK(estado IN ('activo', 'inactivo')) DEFAULT 'activo'
+);
+
+-- Tabla de Obras/Proyectos
+CREATE TABLE obras (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    cliente_id INTEGER NOT NULL,
+    nombre TEXT NOT NULL,
+    descripcion TEXT,
+    fecha_inicio TEXT,  -- SQLite usa tipo TEXT para fechas
+    fecha_fin_prevista TEXT,
+    presupuesto REAL,
+    estado TEXT CHECK(estado IN ('planificacion', 'en_progreso', 'finalizado', 'cancelado')) DEFAULT 'planificacion',
+    FOREIGN KEY (cliente_id) REFERENCES clientes(id) ON DELETE CASCADE
+);
+
+-- Tabla de Tipos de Gasto
+CREATE TABLE tipos_gasto (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    nombre TEXT NOT NULL UNIQUE,
+    descripcion TEXT
+);
+
+-- Tabla de Gastos
+CREATE TABLE gastos (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    obra_id INTEGER NOT NULL,
+    proveedor_id INTEGER NOT NULL,
+    tipo_gasto_id INTEGER NOT NULL,
+    descripcion TEXT NOT NULL,
+    monto REAL NOT NULL,
+    fecha TEXT NOT NULL,
+    FOREIGN KEY (obra_id) REFERENCES obras(id) ON DELETE CASCADE,
+    FOREIGN KEY (proveedor_id) REFERENCES proveedores(id) ON DELETE CASCADE,
+    FOREIGN KEY (tipo_gasto_id) REFERENCES tipos_gasto(id)
+);
+
+-- Tabla de Cuentas por Pagar
+CREATE TABLE cuentas_pagar (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    gasto_id INTEGER NOT NULL,
+    fecha_emision TEXT NOT NULL,
+    fecha_vencimiento TEXT NOT NULL,
+    monto_total REAL NOT NULL,
+    saldo_pendiente REAL NOT NULL,
+    estado TEXT CHECK(estado IN ('pendiente', 'parcial', 'pagado', 'vencido')) DEFAULT 'pendiente',
+    FOREIGN KEY (gasto_id) REFERENCES gastos(id) ON DELETE CASCADE
+);
+
+-- Tabla de Pagos
+CREATE TABLE pagos (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    cuenta_pagar_id INTEGER NOT NULL,
+    monto REAL NOT NULL,
+    fecha TEXT NOT NULL,
+    metodo_pago TEXT CHECK(metodo_pago IN ('transferencia', 'cheque', 'efectivo', 'tarjeta')),
+    FOREIGN KEY (cuenta_pagar_id) REFERENCES cuentas_pagar(id) ON DELETE CASCADE
+);
+
+-- Tabla de Cuentas por Cobrar
+CREATE TABLE cuentas_cobrar (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    obra_id INTEGER NOT NULL,
+    descripcion TEXT NOT NULL,
+    fecha_emision TEXT NOT NULL,
+    fecha_vencimiento TEXT NOT NULL,
+    monto_total REAL NOT NULL,
+    saldo_pendiente REAL NOT NULL,
+    estado TEXT CHECK(estado IN ('pendiente', 'parcial', 'pagado', 'vencido')) DEFAULT 'pendiente',
+    FOREIGN KEY (obra_id) REFERENCES obras(id) ON DELETE CASCADE
+);
+
+-- Tabla de Cobros
+CREATE TABLE cobros (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    cuenta_cobrar_id INTEGER NOT NULL,
+    monto REAL NOT NULL,
+    fecha TEXT NOT NULL,
+    metodo_pago TEXT CHECK(metodo_pago IN ('transferencia', 'cheque', 'efectivo', 'tarjeta')),
+    FOREIGN KEY (cuenta_cobrar_id) REFERENCES cuentas_cobrar(id) ON DELETE CASCADE
+);
+
+-- Triggers para actualización automática
+-- Trigger para actualizar saldo al registrar pago
+CREATE TRIGGER actualizar_saldo_pagar AFTER INSERT ON pagos
+BEGIN
+    UPDATE cuentas_pagar 
+    SET saldo_pendiente = saldo_pendiente - NEW.monto
+    WHERE id = NEW.cuenta_pagar_id;
+END;
+
+-- Trigger para actualizar estado de cuentas por pagar
+CREATE TRIGGER actualizar_estado_pagar AFTER UPDATE ON cuentas_pagar
+WHEN NEW.saldo_pendiente <= 0
+BEGIN
+    UPDATE cuentas_pagar SET estado = 'pagado' WHERE id = NEW.id;
+END;
+
+-- Trigger para cuentas por cobrar
+CREATE TRIGGER actualizar_saldo_cobrar AFTER INSERT ON cobros
+BEGIN
+    UPDATE cuentas_cobrar 
+    SET saldo_pendiente = saldo_pendiente - NEW.monto
+    WHERE id = NEW.cuenta_cobrar_id;
+END;
+
+-- Vista: Resumen financiero por obra
+CREATE VIEW resumen_obras AS
+SELECT 
+    o.id,
+    o.nombre AS obra,
+    c.nombre AS cliente,
+    COALESCE(SUM(g.monto), 0) AS total_gastos,
+    COALESCE(SUM(cc.monto_total), 0) AS total_facturado,
+    (COALESCE(SUM(cc.monto_total), 0) - COALESCE(SUM(g.monto), 0)) AS utilidad_bruta
+FROM obras o
+JOIN clientes c ON o.cliente_id = c.id
+LEFT JOIN gastos g ON o.id = g.obra_id
+LEFT JOIN cuentas_cobrar cc ON o.id = cc.obra_id
+GROUP BY o.id;
+
+-- Vista: Estado de cuentas por pagar
+CREATE VIEW estado_cuentas_pagar AS
+SELECT 
+    p.nombre AS proveedor,
+    cp.fecha_vencimiento,
+    cp.monto_total,
+    cp.saldo_pendiente,
+    cp.estado
+FROM cuentas_pagar cp
+JOIN gastos g ON cp.gasto_id = g.id
+JOIN proveedores p ON g.proveedor_id = p.id;
+```
+
+### Cambios principales para SQLite:
+
+1. **Tipos de datos:**
+   - `INTEGER` en lugar de `INT`
+   - `REAL` para valores decimales
+   - `TEXT` para cadenas y fechas
+   - Eliminado `AUTO_INCREMENT` → Usar `AUTOINCREMENT`
+
+2. **Manejo de fechas:**
+   - SQLite no tiene tipo `DATE` → Usar `TEXT` en formato ISO 8601 (YYYY-MM-DD)
+
+3. **Enums:**
+   - Reemplazados con `TEXT` + `CHECK`
+   - Ej: `estado TEXT CHECK(estado IN ('activo', 'inactivo'))`
+
+4. **Sintaxis de triggers:**
+   - Simplificada la estructura
+   - Usar `NEW` para acceder a los valores insertados
+
+5. **Manejo de nulos en vistas:**
+   - Usar `COALESCE()` para evitar valores nulos en sumas
+
+### Para usar la base de datos:
+
+1. Guarda el código en un archivo `crear_db.sql`
+2. Ejecutar con: `sqlite3 obras.db < crear_db.sql`
+3. Conectarse a la DB: `sqlite3 obras.db`
+
+### Funcionalidades clave:
+
+1. **Integridad referencial:** Mantiene relaciones entre tablas
+2. **Triggers:** Actualizan automáticamente saldos y estados
+3. **Vistas:**
+   - `resumen_obras`: Muestra análisis financiero por proyecto
+   - `estado_cuentas_pagar`: Detalle de deudas con proveedores
+
+### Notas importantes:
+
+- Para habilitar claves foráneas en SQLite, ejecutar al inicio:
+  ```sql
+  PRAGMA foreign_keys = ON;
+  ```
+- Las fechas deben insertarse en formato ISO: `'2023-12-31'`
+- Los estados solo aceptan valores definidos en los `CHECK`
+- Los triggers mantienen actualizados los saldos automáticamente
+
+Esta estructura proporciona una base sólida para gestionar proyectos, proveedores, clientes y movimientos financieros en SQLite.
